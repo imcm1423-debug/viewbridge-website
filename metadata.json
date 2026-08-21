@@ -1,0 +1,6 @@
+{
+  "name": "ViewBridge (뷰브릿지) - 금융 뉴스 및 문서 인사이트 해설",
+  "description": "관찰에서 인사이트로, 초보 투자자를 위해 복잡한 금융 문서와 뉴스를 완벽하게 분석하고 명확한 연결 가치를 제공합니다.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
