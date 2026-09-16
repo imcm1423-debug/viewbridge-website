@@ -1,6 +1,7 @@
 export interface GlossaryItem {
   term: string;
-  definition: string;
+  definition?: string;
+  meaning?: string;
 }
 
 export interface AffectedSector {
@@ -23,9 +24,10 @@ export interface VerifiedFact {
 }
 
 export interface AIInterpretation {
-  topic: string; // 해석 주제/관점
-  sentiment: "bullish" | "bearish" | "neutral"; // 방향성
+  topic?: string; // 해석 주제/관점
+  sentiment?: "bullish" | "bearish" | "neutral"; // 방향성
   interpretation: string; // "~로 해석될 수 있음" 형태의 가설/가능성 표현
+  reasoning?: string;
 }
 
 export interface AnalysisResult {
@@ -40,6 +42,7 @@ export interface AnalysisResult {
 
   // 2. AI 해석 (호재/악재/중립 판단 및 해석 가능성)
   aiInterpretations: AIInterpretation[];
+  aiInterpretation?: AIInterpretation[]; // 호환용 별칭
   sentiment: "bullish" | "bearish" | "neutral";
   sentimentReason: string;
   impactScore: number; // 1 to 5 (참고용 기준)
@@ -49,22 +52,34 @@ export interface AnalysisResult {
 
   // 4. 리스크 (오해 여지, 누락 정보, 과장 가능성, 반대 해석)
   riskFactors: string[];
+  risks?: string[]; // 호환용 별칭
+  beginnerCaution?: string;
+  misconceptions?: string[];
 
   // 보조 섹션 (용어, 연관 업종, 참고 자료 등)
   glossary: GlossaryItem[];
+  terms?: GlossaryItem[]; // 호환용 별칭
   affectedSectors: AffectedSector[];
   keyTakeaways?: string[];
   actionPlan?: string[];
+  beginnerChecklist?: string[]; // 호환용 별칭
   riskFactor?: string;
   sourceCredibility: string; // 추가 확인에 참고할 수 있는 자료 및 출처 정보
+  sourceInfo?: { sourceName?: string; date?: string };
   authoritativeContext: string[]; // 추가 확인에 참고할 수 있는 공식 자료/사이트
   relatedNews?: RelatedNewsItem[];
 }
 
 export interface HistoryItem {
   id: string;
-  insertedAt: string;
-  articleText: string;
+  title?: string;
+  date?: string;
+  sentiment?: "bullish" | "bearish" | "neutral";
+  impactScore?: number;
+  summary?: string;
+  insertedAt?: string;
+  articleText?: string;
+  inputText: string;
   result: AnalysisResult;
 }
 

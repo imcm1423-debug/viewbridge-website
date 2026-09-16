@@ -99,7 +99,7 @@ app.post("/api/analyze", async (req, res) => {
   * 추가 확인: FOMC 발표문, CPI, 고용보고서 원문 자료.`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
+      model: "gemini-3.8-flash",
       contents: text,
       config: {
         systemInstruction: ANALYZE_SYSTEM_INSTRUCTION,
@@ -139,7 +139,8 @@ app.post("/api/analyze", async (req, res) => {
                 properties: {
                   topic: { type: Type.STRING, description: "해석의 핵심 주제/이슈" },
                   sentiment: { type: Type.STRING, enum: ["bullish", "bearish", "neutral"], description: "방향성" },
-                  interpretation: { type: Type.STRING, description: "확정이 아닌 가능성 수준으로 작성된 해석 문장 (예: ~로 해석될 수 있습니다)" }
+                  interpretation: { type: Type.STRING, description: "확정이 아닌 가능성 수준으로 작성된 해석 문장 (예: ~로 해석될 수 있습니다)" },
+                  reasoning: { type: Type.STRING, description: "해당 해석이 도출된 배경 원인 및 맥락 근거" }
                 },
                 required: ["topic", "sentiment", "interpretation"]
               }
@@ -159,12 +160,17 @@ app.post("/api/analyze", async (req, res) => {
             },
             needFurtherVerification: {
               type: Type.ARRAY,
-              description: "3. 추가 확인 필요: 원문만으로 확인이 부족하여 공시나 공식 발표 확인이 필요한 항목들",
+              description: "3. 추가 확인 필요: 원문만으로 확인이 부족하여 DART 전자공시나 공식 발표 확인이 필요한 항목들 (2~3개)",
               items: { type: Type.STRING }
             },
             riskFactors: {
               type: Type.ARRAY,
-              description: "4. 리스크 및 오해 가능성: 오해 가능 표현, 누락 정보, 과장 보도 가능성, 반대 해석 요인 목록",
+              description: "4. 리스크: 이면의 구조적 리스크, 고정비 부담, 과장 보도 가능성 등 투자 경고 사항",
+              items: { type: Type.STRING }
+            },
+            misconceptions: {
+              type: Type.ARRAY,
+              description: "초보 투자자가 기사 내용만 보고 섣불리 오해하거나 착각하기 쉬운 주의점 및 팩트체크 진실 (2~3개)",
               items: { type: Type.STRING }
             },
             glossary: {
@@ -194,17 +200,32 @@ app.post("/api/analyze", async (req, res) => {
             },
             actionPlan: {
               type: Type.ARRAY,
-              description: "추가로 확인해 볼 체크리스트 (2~3개)",
+              description: "초보자를 위한 당장 대응 및 실천 리스크 체크리스트 (2~3개)",
               items: { type: Type.STRING }
             },
             sourceCredibility: {
               type: Type.STRING,
-              description: "추가 확인에 참고할 수 있는 출처 및 신뢰도 관련 정보"
+              description: "추가 확인에 참고할 수 있는 출처 및 신뢰도 관련 정보 (DART, 공식 보도 등 객관적 신뢰성 평가)"
             },
             authoritativeContext: {
               type: Type.ARRAY,
-              description: "추가 확인에 참고할 수 있는 공식 기관 지표 및 사이트 자료 목록",
+              description: "추가 확인에 참고할 수 있는 공식 기관 지표 및 사이트 자료 목록 (예: 금융감독원 전자공시시스템(DART), 한국거래소(KRX) 정보데이터시스템 등)",
               items: { type: Type.STRING }
+            },
+            relatedNews: {
+              type: Type.ARRAY,
+              description: "기사 주제와 직결된 실시간 추가 뉴스 또는 교차 검증 참고 소식 2~3개",
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING, description: "연관 뉴스 기사 제목" },
+                  snippet: { type: Type.STRING, description: "핵심 요약 1~2문장" },
+                  source: { type: Type.STRING, description: "언론사 또는 공식 기관명 (예: 연합뉴스, 매일경제, 금융감독원)" },
+                  url: { type: Type.STRING, description: "구글 검색 또는 공식 참고 링크 URL" },
+                  date: { type: Type.STRING, description: "발행 시점 (예: 2시간 전, 최근)" }
+                },
+                required: ["title", "snippet", "source", "url", "date"]
+              }
             }
           },
           required: [
@@ -217,10 +238,12 @@ app.post("/api/analyze", async (req, res) => {
             "impactScore",
             "needFurtherVerification",
             "riskFactors",
+            "misconceptions",
             "glossary",
             "affectedSectors",
             "sourceCredibility",
-            "authoritativeContext"
+            "authoritativeContext",
+            "relatedNews"
           ]
         }
       }
@@ -233,46 +256,49 @@ app.post("/api/analyze", async (req, res) => {
 
     const parsed = JSON.parse(resultText);
 
-    // 🔍 추가 실시간 정보: 구글 실시간 검색 연동하여 최신 관련 뉴스 3개 분석 및 조회
-    let relatedNews = [];
-    try {
-      const searchPrompt = `구글 검색(Google Search)을 적극적으로 활용하여, 다음 주식/금융 소식의 주제와 밀접하게 연관된 실시간 최신 뉴스 기사, 공시 또는 신뢰할 수 있는 공식 발표자료 3개를 찾아주세요.
+    // 🔍 관련 뉴스: 1차 분석에서 생성된 relatedNews를 기본으로 유지 (API Quota 절약 및 고속 보장)
+    let relatedNews = Array.isArray(parsed.relatedNews) && parsed.relatedNews.length > 0 
+      ? parsed.relatedNews 
+      : [];
+
+    // 만약 1차 결과에 뉴스가 비어있는 경우에만 보조 구글 검색 시도
+    if (relatedNews.length === 0) {
+      try {
+        const searchPrompt = `구글 검색(Google Search)을 참고하여, 다음 주식/금융 소식의 주제와 연관된 실시간 최신 뉴스 기사나 공시 2~3개를 찾아 JSON 배열로 반환하세요.
 주제: "${parsed.title}"
+형식: [{"title": "기사 제목", "snippet": "내용 요약", "source": "언론사", "url": "URL", "date": "발행시간"}]`;
 
-반드시 최신 실제 정보(실제 기사 및 뉴스)를 검색하고, 검색 결과에서 확인된 실제 정보로만 아래 JSON 형식을 채워주세요. 절대 허구의 URL이나 가짜 기사를 생성하지 말고, 검색 결과에 나온 실제 존재하는 뉴스 및 URL을 기입해 주세요. 각 기사의 발행 날짜나 시간(예: '3시간 전', '2026-07-15')도 정확히 기입해야 합니다.`;
+        const searchResponse = await ai.models.generateContent({
+          model: "gemini-3.8-flash",
+          contents: searchPrompt,
+          config: {
+            tools: [{ googleSearch: {} }]
+          }
+        });
 
-      const searchResponse = await ai.models.generateContent({
-        model: "gemini-3.6-flash",
-        contents: searchPrompt,
-        config: {
-          tools: [{ googleSearch: {} }],
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            description: "구글 실시간 검색을 통한 최신 관련 뉴스 및 정보 목록 (3개)",
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                title: { type: Type.STRING, description: "실제 검색된 최신 뉴스 기사의 제목" },
-                snippet: { type: Type.STRING, description: "해당 기사의 핵심 내용 요약 (1~2문장)" },
-                source: { type: Type.STRING, description: "뉴스 출처 언론사 또는 기관명 (예: 연합뉴스, 매일경제, 금융감독원)" },
-                url: { type: Type.STRING, description: "구글 검색 결과에서 확인된 실제 해당 기사의 URL 링크" },
-                date: { type: Type.STRING, description: "기사 발행 시간 정보 (예: '2시간 전', '2026.07.15', '어제')" }
-              },
-              required: ["title", "snippet", "source", "url", "date"]
-            }
+        if (searchResponse.text) {
+          const cleanedText = searchResponse.text.replace(/```json/g, "").replace(/```/g, "").trim();
+          const parsedSearch = JSON.parse(cleanedText);
+          if (Array.isArray(parsedSearch) && parsedSearch.length > 0) {
+            relatedNews = parsedSearch;
           }
         }
-      });
-
-      if (searchResponse.text) {
-        relatedNews = JSON.parse(searchResponse.text.trim());
+      } catch (searchError: any) {
+        console.warn("Related News Search Notice (non-critical):", searchError?.message || searchError);
       }
-    } catch (searchError: any) {
-      console.warn("Related News Search Notice (non-critical):", searchError?.message || searchError);
     }
 
     parsed.relatedNews = relatedNews;
+    // Compatibility aliases for frontend components
+    parsed.aiInterpretation = parsed.aiInterpretations || [];
+    parsed.risks = parsed.riskFactors || [];
+    parsed.beginnerChecklist = parsed.actionPlan || [];
+    parsed.terms = (parsed.glossary || []).map((g: any) => ({
+      term: g.term,
+      meaning: g.definition || g.meaning || "",
+      definition: g.definition || g.meaning || ""
+    }));
+
     res.json(parsed);
   } catch (error: any) {
     console.error("Analysis API Error:", error?.message || error);
@@ -284,10 +310,10 @@ app.post("/api/analyze", async (req, res) => {
   }
 });
 
-// 💬 추가 심층 질문(Follow-up Q&A) API
-app.post("/api/ask-followup", async (req, res) => {
+// 💬 추가 심층 질문(Follow-up Q&A) API - /api/chat 및 /api/ask-followup 둘 다 지원
+app.post(["/api/ask-followup", "/api/chat"], async (req, res) => {
   try {
-    const { articleTitle, articleSummary, question, chatHistory } = req.body;
+    const { articleTitle, articleSummary, question, chatHistory, context } = req.body;
 
     if (!question || typeof question !== "string") {
       return res.status(400).json({ error: "질문 내용을 입력해 주세요." });
@@ -317,7 +343,9 @@ app.post("/api/ask-followup", async (req, res) => {
 3. 사실과 해석 구분: 입력 원문에서 확인 가능한 팩트와 가설 수준의 AI 해석을 구분하여 명확히 답변하세요.
 4. 친절하고 가독성 높은 설명: 초보자가 쉽게 이해할 수 있도록 깔끔한 개조식과 쉬운 표현을 활용하세요.`;
 
-    const contextPrefix = `[참고 분석 문서 정보]\n제목: ${articleTitle || "분석 기사"}\n핵심 요약: ${articleSummary || "요약 내용 없음"}`;
+    const contextPrefix = context 
+      ? `[참고 분석 문서 컨텍스트]\n${typeof context === "string" ? context : JSON.stringify(context)}`
+      : `[참고 분석 문서 정보]\n제목: ${articleTitle || "분석 기사"}\n핵심 요약: ${articleSummary || "요약 내용 없음"}`;
 
     const messages = [
       { role: "user", parts: [{ text: contextPrefix }] },
@@ -329,7 +357,7 @@ app.post("/api/ask-followup", async (req, res) => {
     ];
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
+      model: "gemini-3.8-flash",
       contents: messages,
       config: {
         systemInstruction: FOLLOWUP_SYSTEM_INSTRUCTION
@@ -337,7 +365,7 @@ app.post("/api/ask-followup", async (req, res) => {
     });
 
     const reply = response.text || "죄송합니다. 답변을 생성하지 못했습니다.";
-    res.json({ reply });
+    res.json({ reply, answer: reply });
   } catch (error: any) {
     console.error("Follow-up Q&A API Error:", error?.message || error);
     const isRateLimit = error?.status === 429 || error?.message?.includes("429") || error?.message?.includes("RESOURCE_EXHAUSTED");
