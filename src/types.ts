@@ -30,6 +30,21 @@ export interface AIInterpretation {
   reasoning?: string;
 }
 
+export interface CounterPerspective {
+  interpretation: string; // 기존 주요 해석과 다르게 볼 수 있는 관점
+  reasoning: string; // 그런 해석이 가능한 이유
+  evidenceToCheck: string; // 어느 해석이 더 타당한지 판단하기 위해 추가로 확인할 자료나 조건
+}
+
+export type DecisionNoteStatus = "needs_verification" | "deferred" | "reviewed";
+
+export interface DecisionNote {
+  status: DecisionNoteStatus;
+  reason: string;
+  createdAt: string; // ISO 문자열
+  updatedAt: string; // ISO 문자열
+}
+
 export interface AnalysisResult {
   title: string;
   summary3Sec: string;
@@ -47,14 +62,20 @@ export interface AnalysisResult {
   sentimentReason: string;
   impactScore: number; // 1 to 5 (참고용 기준)
 
-  // 3. 추가 확인 필요 (원문 미확인, 공시/공식발표/타기사 필요)
+  // 3. 반대 해석 (다르게 볼 수 있는 관점)
+  counterPerspectives?: CounterPerspective[];
+
+  // 4. 추가 확인 필요 (원문 미확인, 공시/공식발표/타기사 필요)
   needFurtherVerification: string[];
 
-  // 4. 리스크 (오해 여지, 누락 정보, 과장 가능성, 반대 해석)
+  // 5. 리스크 (오해 여지, 누락 정보, 과장 가능성, 반대 해석)
   riskFactors: string[];
   risks?: string[]; // 호환용 별칭
   beginnerCaution?: string;
   misconceptions?: string[];
+
+  // 검색 상태 판정 (서버 또는 샘플 판정)
+  searchStatus?: "grounded" | "not_grounded" | "unverified" | "sample";
 
   // 보조 섹션 (용어, 연관 업종, 참고 자료 등)
   glossary: GlossaryItem[];
@@ -81,5 +102,7 @@ export interface HistoryItem {
   articleText?: string;
   inputText: string;
   result: AnalysisResult;
+  decisionNote?: DecisionNote;
+  isSample?: boolean;
 }
 

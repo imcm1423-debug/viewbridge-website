@@ -68,6 +68,13 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
       console.info("Sign-in popup was closed by the user.");
       return null;
     }
+    if (
+      error?.code === "auth/unauthorized-domain" ||
+      error?.message?.includes("unauthorized-domain")
+    ) {
+      console.warn("Firebase Auth unauthorized domain:", window.location.hostname);
+      throw error;
+    }
     console.error("Sign in error:", error);
     throw error;
   } finally {

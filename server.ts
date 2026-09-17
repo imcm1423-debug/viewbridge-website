@@ -31,6 +31,95 @@ function getAIClient(): GoogleGenAI {
   return aiClient;
 }
 
+// 🛡️ Gemini API 503 일시적 부하(High Demand) 및 속도제한(429) 자동 재시도 및 모델 폴백 러너
+async function runGeminiWithRetryAndFallback<T>(
+  fn: (modelName: string) => Promise<T>,
+  models: string[] = ["gemini-3.8-flash", "gemini-flash-latest"]
+): Promise<T> {
+  let lastError: any = null;
+
+  for (const model of models) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await fn(model);
+      } catch (err: any) {
+        lastError = err;
+        const errMsg = String(err?.message || err || "");
+        const isDemandSpike =
+          err?.status === 503 ||
+          err?.code === 503 ||
+          errMsg.includes("503") ||
+          errMsg.includes("UNAVAILABLE") ||
+          errMsg.includes("high demand") ||
+          errMsg.includes("temporarily");
+        const isRateLimit =
+          err?.status === 429 ||
+          err?.code === 429 ||
+          errMsg.includes("429") ||
+          errMsg.includes("RESOURCE_EXHAUSTED");
+
+        if ((isDemandSpike || isRateLimit) && attempt === 0) {
+          console.warn(`[Gemini API] Temporary demand spike on model ${model} (attempt 1), retrying in 1.5s...`);
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          continue;
+        }
+
+        if (isDemandSpike || isRateLimit) {
+          console.warn(`[Gemini API] Model ${model} is currently unavailable. Trying fallback model...`);
+          break; // Fallback to next model in list
+        }
+
+        // Non-transient error, throw immediately
+        throw err;
+      }
+    }
+  }
+
+  throw lastError;
+}
+
+// 🛡️ 오류 객체/JSON 문자열을 안전하게 파싱하여 친절한 사용자 안내 메시지로 변환
+function parseAndFormatGeminiError(error: any): { status: number; message: string } {
+  const rawMsg = String(error?.message || error || "");
+  let parsedCode: number | null = null;
+  let parsedStatus: string | null = null;
+  let parsedMsg: string | null = null;
+
+  try {
+    if (rawMsg.startsWith("{") && rawMsg.endsWith("}")) {
+      const parsed = JSON.parse(rawMsg);
+      if (parsed?.error) {
+        parsedCode = parsed.error.code;
+        parsedStatus = parsed.error.status;
+        parsedMsg = parsed.error.message;
+      }
+    }
+  } catch {}
+
+  const code = parsedCode || error?.status || error?.code;
+  const statusStr = String(parsedStatus || "").toUpperCase();
+  const textToCheck = `${rawMsg} ${parsedMsg || ""}`.toUpperCase();
+
+  if (code === 503 || statusStr === "UNAVAILABLE" || textToCheck.includes("503") || textToCheck.includes("HIGH DEMAND") || textToCheck.includes("UNAVAILABLE")) {
+    return {
+      status: 503,
+      message: "현재 AI 모델 서버에 일시적인 트래픽(수요 급증)이 발생했습니다. 약 10~20초 후 다시 시도해 주세요."
+    };
+  }
+
+  if (code === 429 || statusStr === "RESOURCE_EXHAUSTED" || textToCheck.includes("429") || textToCheck.includes("RESOURCE_EXHAUSTED")) {
+    return {
+      status: 429,
+      message: "AI 요청 한도(Quota)가 일시적으로 초과되었습니다. 약 1분 후 다시 시도해 주세요."
+    };
+  }
+
+  return {
+    status: 500,
+    message: parsedMsg || (rawMsg.startsWith("{") ? "문서를 분석하는 도중 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요." : rawMsg)
+  };
+}
+
 // Analysis API endpoint
 app.post("/api/analyze", async (req, res) => {
   try {
@@ -49,6 +138,14 @@ app.post("/api/analyze", async (req, res) => {
 원문에서 확인되지 않는 내용은 사실처럼 말하지 않는다.
 주식 뉴스가 아닌 정책/금융상품/제도 문서에는 호재·악재 판단을 표시하지 않는다.
 매수, 매도, 추격 매수, 매수세, 매도세, 행동강령 같은 표현을 피하고 중립적인 확인 표현을 사용한다.
+
+[반대 해석(counterPerspectives) 작성 규칙]
+- 원문에 근거해 가능한 반대 해석을 1~2개 제시한다.
+- 반대를 위한 반대나 근거 없는 부정적 주장을 만들지 않는다.
+- 판단 근거가 부족하면 억지로 생성하지 않고 빈 배열([])을 반환한다.
+- 외부 자료를 실제로 조회하지 않았다면 조회·검증했다고 표현하지 않는다.
+- 매수·매도 추천을 하지 않는다.
+- 정책·제도 문서는 투자 방향이 아닌 적용 조건·한계·다른 해석을 설명한다.
 
 [개인정보 및 기밀정보 처리 규칙]
 - 사용자가 입력한 내용에 주민등록번호, 계좌번호, 전화번호, 주소, 비밀번호, 내부 기밀, 계약서 원문, 미공개 투자정보 등 개인정보나 비밀정보가 포함되어 있는 것으로 판단되면:
@@ -98,8 +195,9 @@ app.post("/api/analyze", async (req, res) => {
   * 리스크: 금리 인하 기대감과 경기 침체 리스크가 공존할 수 있음을 지적.
   * 추가 확인: FOMC 발표문, CPI, 고용보고서 원문 자료.`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
+    const response = await runGeminiWithRetryAndFallback((modelName) =>
+      ai.models.generateContent({
+        model: modelName,
       contents: text,
       config: {
         systemInstruction: ANALYZE_SYSTEM_INSTRUCTION,
@@ -157,6 +255,19 @@ app.post("/api/analyze", async (req, res) => {
             impactScore: { 
               type: Type.INTEGER, 
               description: "참고용 영향 범위 기준 (1~5 정수)" 
+            },
+            counterPerspectives: {
+              type: Type.ARRAY,
+              description: "원문에 근거해 가능한 반대 해석 1~2개 (판단 근거 부족 시 빈 배열 반환)",
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  interpretation: { type: Type.STRING, description: "기존 주요 해석과 다르게 볼 수 있는 관점" },
+                  reasoning: { type: Type.STRING, description: "그런 해석이 가능한 이유" },
+                  evidenceToCheck: { type: Type.STRING, description: "어느 해석이 더 타당한지 판단하기 위해 추가로 확인할 자료나 조건" }
+                },
+                required: ["interpretation", "reasoning", "evidenceToCheck"]
+              }
             },
             needFurtherVerification: {
               type: Type.ARRAY,
@@ -237,17 +348,18 @@ app.post("/api/analyze", async (req, res) => {
             "sentimentReason",
             "impactScore",
             "needFurtherVerification",
+            "counterPerspectives",
             "riskFactors",
             "misconceptions",
             "glossary",
             "affectedSectors",
             "sourceCredibility",
-            "authoritativeContext",
-            "relatedNews"
+            "authoritativeContext"
           ]
         }
       }
-    });
+    })
+  );
 
     const resultText = response.text;
     if (!resultText) {
@@ -256,39 +368,15 @@ app.post("/api/analyze", async (req, res) => {
 
     const parsed = JSON.parse(resultText);
 
-    // 🔍 관련 뉴스: 1차 분석에서 생성된 relatedNews를 기본으로 유지 (API Quota 절약 및 고속 보장)
-    let relatedNews = Array.isArray(parsed.relatedNews) && parsed.relatedNews.length > 0 
-      ? parsed.relatedNews 
+    // 🔍 검색 실행 여부 및 실제 검색 근거 확인 여부를 서버 코드가 직접 판정
+    // 무조건 추가 검색을 호출하여 불필요한 AI Quota 및 비용을 낭비하지 않으며,
+    // Google Search 실제 grounding 메타데이터가 확인되지 않은 경우 '검색 미수행/근거 미확인'으로 서버가 확정합니다.
+    parsed.searchStatus = "not_grounded";
+    parsed.relatedNews = [];
+    parsed.counterPerspectives = Array.isArray(parsed.counterPerspectives)
+      ? parsed.counterPerspectives
       : [];
 
-    // 만약 1차 결과에 뉴스가 비어있는 경우에만 보조 구글 검색 시도
-    if (relatedNews.length === 0) {
-      try {
-        const searchPrompt = `구글 검색(Google Search)을 참고하여, 다음 주식/금융 소식의 주제와 연관된 실시간 최신 뉴스 기사나 공시 2~3개를 찾아 JSON 배열로 반환하세요.
-주제: "${parsed.title}"
-형식: [{"title": "기사 제목", "snippet": "내용 요약", "source": "언론사", "url": "URL", "date": "발행시간"}]`;
-
-        const searchResponse = await ai.models.generateContent({
-          model: "gemini-3.8-flash",
-          contents: searchPrompt,
-          config: {
-            tools: [{ googleSearch: {} }]
-          }
-        });
-
-        if (searchResponse.text) {
-          const cleanedText = searchResponse.text.replace(/```json/g, "").replace(/```/g, "").trim();
-          const parsedSearch = JSON.parse(cleanedText);
-          if (Array.isArray(parsedSearch) && parsedSearch.length > 0) {
-            relatedNews = parsedSearch;
-          }
-        }
-      } catch (searchError: any) {
-        console.warn("Related News Search Notice (non-critical):", searchError?.message || searchError);
-      }
-    }
-
-    parsed.relatedNews = relatedNews;
     // Compatibility aliases for frontend components
     parsed.aiInterpretation = parsed.aiInterpretations || [];
     parsed.risks = parsed.riskFactors || [];
@@ -302,11 +390,8 @@ app.post("/api/analyze", async (req, res) => {
     res.json(parsed);
   } catch (error: any) {
     console.error("Analysis API Error:", error?.message || error);
-    const isRateLimit = error?.status === 429 || error?.message?.includes("429") || error?.message?.includes("RESOURCE_EXHAUSTED");
-    const userMsg = isRateLimit 
-      ? "AI 요청 한도(Quota)가 일시적으로 초과되었습니다. 약 1분 후 다시 시도해 주세요." 
-      : (error.message || "문서를 분석하는 도중 오류가 발생했습니다.");
-    res.status(isRateLimit ? 429 : 500).json({ error: userMsg });
+    const { status, message } = parseAndFormatGeminiError(error);
+    res.status(status).json({ error: message });
   }
 });
 
@@ -356,23 +441,22 @@ app.post(["/api/ask-followup", "/api/chat"], async (req, res) => {
       { role: "user", parts: [{ text: question }] }
     ];
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
-      contents: messages,
-      config: {
-        systemInstruction: FOLLOWUP_SYSTEM_INSTRUCTION
-      }
-    });
+    const response = await runGeminiWithRetryAndFallback((modelName) =>
+      ai.models.generateContent({
+        model: modelName,
+        contents: messages,
+        config: {
+          systemInstruction: FOLLOWUP_SYSTEM_INSTRUCTION
+        }
+      })
+    );
 
     const reply = response.text || "죄송합니다. 답변을 생성하지 못했습니다.";
     res.json({ reply, answer: reply });
   } catch (error: any) {
     console.error("Follow-up Q&A API Error:", error?.message || error);
-    const isRateLimit = error?.status === 429 || error?.message?.includes("429") || error?.message?.includes("RESOURCE_EXHAUSTED");
-    const userMsg = isRateLimit 
-      ? "AI 요청 한도(Quota)가 일시적으로 초과되었습니다. 약 1분 후 다시 질문해 주세요." 
-      : (error.message || "질문에 답변하는 중 오류가 발생했습니다.");
-    res.status(isRateLimit ? 429 : 500).json({ error: userMsg });
+    const { status, message } = parseAndFormatGeminiError(error);
+    res.status(status).json({ error: message });
   }
 });
 

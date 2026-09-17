@@ -39,10 +39,13 @@ import {
   ExternalLink,
   FileSearch,
   ShieldAlert,
-  User as UserIcon
+  User as UserIcon,
+  Scale,
+  PenLine,
+  Save
 } from "lucide-react";
 import { SAMPLE_ARTICLES, SampleArticle } from "./data/samples.ts";
-import { AnalysisResult, HistoryItem } from "./types.ts";
+import { AnalysisResult, HistoryItem, DecisionNoteStatus } from "./types.ts";
 import { 
   initAuth, 
   googleSignIn, 
@@ -52,6 +55,7 @@ import {
 import { User } from "firebase/auth";
 import { ViewBridgeLogo } from "./components/ViewBridgeLogo.tsx";
 import { BrandGuideModal } from "./components/BrandGuideModal.tsx";
+import { UnauthorizedDomainModal } from "./components/UnauthorizedDomainModal.tsx";
 
 // 💡 구글 미로그인 상태에서도 제약 없이 체험할 수 있는 데모 드라이브 문서들
 const DEMO_DRIVE_FILES = [
@@ -126,6 +130,8 @@ export default function App() {
 
   // 🏛️ 브랜드 가이드 모달 상태
   const [isBrandGuideOpen, setIsBrandGuideOpen] = useState<boolean>(false);
+  // 🔒 Firebase 승인된 도메인 설정 안내 모달 상태
+  const [isDomainModalOpen, setIsDomainModalOpen] = useState<boolean>(false);
 
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
@@ -149,6 +155,15 @@ export default function App() {
   const [chatInput, setChatInput] = useState<string>("");
   const [chatLoading, setChatLoading] = useState<boolean>(false);
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
+
+  // 📝 내 생각 정리하기 (검토 기록) 상태
+  const [currentAnalysisId, setCurrentAnalysisId] = useState<string | null>(null);
+  const [noteStatus, setNoteStatus] = useState<DecisionNoteStatus | "">("");
+  const [noteReason, setNoteReason] = useState<string>("");
+  const [noteSavedAt, setNoteSavedAt] = useState<string | null>(null);
+  const [noteFeedback, setNoteFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
+  const [isSampleView, setIsSampleView] = useState<boolean>(false);
+  const [currentSampleId, setCurrentSampleId] = useState<string | null>(null);
 
   // 🎯 분석 결과 화면 자동 포커스 및 스크롤 참조
   const resultContainerRef = useRef<HTMLDivElement>(null);
@@ -269,6 +284,18 @@ export default function App() {
     return () => clearInterval(interval);
   }, [loading, fetchingDocContent]);
 
+  // 💡 모달에서 즉시 체험용 드라이브 문서 사용하기
+  const handleUseDemoFromModal = () => {
+    setTab("drive");
+    setSelectedFile(DEMO_DRIVE_FILES[0]);
+    setIsComplianceChecked(true);
+    setError(null);
+    setIsDomainModalOpen(false);
+    setTimeout(() => {
+      resultContainerRef.current?.scrollIntoView({ behavior: "smooth" });
+    }, 100);
+  };
+
   // Google Sign In Handler
   const handleLogin = async () => {
     setIsLoggingIn(true);
@@ -287,6 +314,15 @@ export default function App() {
         err?.code === "auth/cancelled-popup-request" ||
         err?.message?.includes("popup-closed-by-user")
       ) {
+        return;
+      }
+      if (
+        err?.code === "auth/unauthorized-domain" ||
+        err?.message?.includes("unauthorized-domain")
+      ) {
+        console.warn("Firebase Auth: current domain is not authorized in Firebase Console:", window.location.hostname);
+        setIsDomainModalOpen(true);
+        setError(`현재 접속 도메인(${window.location.hostname})이 Firebase 승인된 도메인에 미등록 상태입니다. [해결 방법]을 확인해 주시거나 체험용 문서를 이용해 보세요.`);
         return;
       }
       console.error("Login failed:", err);
@@ -406,7 +442,7 @@ export default function App() {
       saveToHistory(`[Google Drive: ${file.name}]\n\n` + textContent, data);
     } catch (err: any) {
       console.error(err);
-      setError(err.message || "문서 분석 중 일시적인 네트워크 오류가 발생했습니다.");
+      setError(cleanErrorMessage(err.message));
     } finally {
       setLoading(false);
     }
@@ -437,10 +473,36 @@ export default function App() {
       saveToHistory(`[체험용 문서: ${demoFile.name}]\n\n` + demoFile.content, data);
     } catch (err: any) {
       console.error(err);
-      setError(err.message || "데모 문서 분석 중 오류가 발생했습니다.");
+      setError(cleanErrorMessage(err.message));
     } finally {
       setLoading(false);
     }
+  };
+
+  // 🛡️ 에러 메시지 정제 헬퍼 (503 트래픽 과밀, 429 한도 초과, JSON 파싱 오류 등)
+  const cleanErrorMessage = (msg?: string): string => {
+    if (!msg) return "문서 분석 중 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.";
+    try {
+      if (msg.startsWith("{") && msg.endsWith("}")) {
+        const parsed = JSON.parse(msg);
+        if (parsed?.error?.message) {
+          if (parsed.error.code === 503 || parsed.error.status === "UNAVAILABLE" || parsed.error.message.includes("high demand")) {
+            return "현재 AI 모델 서버에 일시적인 트래픽(수요 급증)이 발생했습니다. 약 10~20초 후 다시 시도해 주세요.";
+          }
+          if (parsed.error.code === 429 || parsed.error.status === "RESOURCE_EXHAUSTED") {
+            return "AI 요청 한도가 일시적으로 초과되었습니다. 약 1분 후 다시 시도해 주세요.";
+          }
+          return parsed.error.message;
+        }
+      }
+    } catch {}
+    if (msg.includes("503") || msg.includes("high demand") || msg.includes("UNAVAILABLE")) {
+      return "현재 AI 모델 서버에 일시적인 트래픽(수요 급증)이 발생했습니다. 약 10~20초 후 다시 시도해 주세요.";
+    }
+    if (msg.includes("429") || msg.includes("RESOURCE_EXHAUSTED")) {
+      return "AI 요청 한도가 일시적으로 초과되었습니다. 약 1분 후 다시 시도해 주세요.";
+    }
+    return msg;
   };
 
   // 로컬 파일 (.txt, .md) 읽기 핸들러
@@ -514,6 +576,18 @@ export default function App() {
       ? misconceptionsList.map((item, idx) => `${idx + 1}. ${item}`).join("\n")
       : "초보자가 흔히 오해하기 쉬운 지점이 명시되지 않았습니다.";
 
+    const counterContent = (res.counterPerspectives && res.counterPerspectives.length > 0)
+      ? res.counterPerspectives.map((cp, idx) => 
+          `[다른 해석 ${idx + 1}] ${cp.interpretation}\n   ↳ 그렇게 보는 이유: ${cp.reasoning}\n   ↳ 추가로 확인할 자료: ${cp.evidenceToCheck}`
+        ).join("\n\n")
+      : "이 분석에는 별도로 생성된 반대 해석이 없습니다.";
+
+    const savedHistoryItem = history.find(h => h.id === currentAnalysisId);
+    const savedNote = savedHistoryItem?.decisionNote;
+    const decisionNoteContent = savedNote
+      ? `[검토 상태] ${savedNote.status === "needs_verification" ? "추가 확인 필요" : savedNote.status === "deferred" ? "판단 보류" : "검토 완료"}\n[이유 및 추가 확인 사항]\n${savedNote.reason}\n[최초 작성] ${new Date(savedNote.createdAt).toLocaleString("ko-KR")}\n[최종 수정] ${new Date(savedNote.updatedAt).toLocaleString("ko-KR")}\n\n※ 안내: 검토 완료는 매수·매도 결정이나 정보의 정확성 확인을 의미하지 않습니다.`
+      : null;
+
     const checklistList = res.actionPlan || res.beginnerChecklist || [];
     const checklistContent = (checklistList.length > 0)
       ? checklistList.map((item, idx) => `[ ] ${item}`).join("\n")
@@ -550,7 +624,7 @@ Observation-driven Product Design
 참고용 영향 범위: ${marketImpactStr}
 AI 해석 방향: ${signalStr}
 
-${formatSection("1. 확인된 사실 (Observe)", verifiedFactsContent, "원문만으로는 확인된 내용이 부족합니다.")}
+${formatSection("1. 원문 기반 사실 정리\n(※ 안내: AI가 입력 원문에서 추출한 내용입니다. 원문 자체의 진위나 외부 자료와의 일치 여부까지 검증한 것은 아닙니다.)", verifiedFactsContent, "원문만으로는 확인된 내용이 부족합니다.")}
 
 ${formatSection("2. AI 해석 (Understand)", aiInterpretationContent, "AI 해석 내용이 제공되지 않았습니다.")}
 
@@ -558,11 +632,13 @@ ${formatSection("3. 추가 확인 필요 (Connect)", needFurtherVerificationCont
 
 ${formatSection("4. 리스크 및 오해 방지 (Improve)", `[주의해야 할 리스크 요인]\n${risksContent}\n\n[초보자가 흔히 하는 오해와 진실]\n${misconceptionsContent}`)}
 
-${formatSection("5. 초보 투자자 실행 체크리스트", checklistContent)}
+${formatSection("5. 다르게 볼 수 있는 관점\n(※ 안내: AI가 제시한 대안적 해석입니다. 외부 자료로 검증된 반대근거를 뜻하지 않습니다.)", counterContent)}
+${decisionNoteContent ? `\n${formatSection("6. 내 생각 정리 (검토 기록)", decisionNoteContent)}\n` : ""}
+${formatSection("7. 초보 투자자 실행 체크리스트", checklistContent)}
 
-${formatSection("6. 핵심 금융 용어 사전", glossaryContent, "별도 설명된 용어가 없습니다.")}
+${formatSection("8. 핵심 금융 용어 사전", glossaryContent, "별도 설명된 용어가 없습니다.")}
 
-${formatSection("7. 추가 확인 참고 자료 및 출처 정보", sourceContent, "추가 출처 정보가 명시되지 않았습니다.")}
+${formatSection("9. 출처 및 추가 확인 안내\n(※ 금융감독원 전자공시시스템(DART), 한국거래소(KRX) 일반 바로가기 안내 - 공식 자료 참고용 링크이며, 본 기사의 특정 주장을 별도로 검증한 전용 링크가 아닙니다.)", sourceContent, "추가 출처 정보가 명시되지 않았습니다.")}
 
 ------------------------------------------------
 [개인정보 및 비밀정보 보호 안내]
@@ -651,16 +727,27 @@ ${formatSection("7. 추가 확인 참고 자료 및 출처 정보", sourceConten
   };
 
   const saveToHistory = (originalText: string, res: AnalysisResult) => {
+    const newItemId = Date.now().toString();
     const newItem: HistoryItem = {
-      id: Date.now().toString(),
+      id: newItemId,
       title: res.title || "무제 분석 건",
       date: new Date().toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }),
       sentiment: res.sentiment,
       impactScore: res.impactScore,
       summary: res.summary3Sec,
       result: res,
-      inputText: originalText
+      inputText: originalText,
+      isSample: false
     };
+
+    setCurrentAnalysisId(newItemId);
+    setSelectedHistoryId(newItemId);
+    setIsSampleView(false);
+    setCurrentSampleId(null);
+    setNoteStatus("");
+    setNoteReason("");
+    setNoteSavedAt(null);
+    setNoteFeedback(null);
 
     setHistory((prev) => {
       const updated = [newItem, ...prev.slice(0, 19)];
@@ -675,9 +762,22 @@ ${formatSection("7. 추가 확인 참고 자료 및 출처 정보", sourceConten
 
   const handleSelectHistory = (item: HistoryItem) => {
     setSelectedHistoryId(item.id);
+    setCurrentAnalysisId(item.id);
     setResult(item.result);
     setInputText(item.inputText);
+    setIsSampleView(Boolean(item.isSample));
+    setCurrentSampleId(null);
     setChatMessages([]);
+    if (item.decisionNote) {
+      setNoteStatus(item.decisionNote.status);
+      setNoteReason(item.decisionNote.reason);
+      setNoteSavedAt(item.decisionNote.updatedAt);
+    } else {
+      setNoteStatus("");
+      setNoteReason("");
+      setNoteSavedAt(null);
+    }
+    setNoteFeedback(null);
   };
 
   const handleDeleteHistory = (id: string, e: React.MouseEvent) => {
@@ -694,6 +794,12 @@ ${formatSection("7. 추가 확인 참고 자료 및 출처 정보", sourceConten
     if (selectedHistoryId === id) {
       setSelectedHistoryId(null);
     }
+    if (currentAnalysisId === id) {
+      setNoteStatus("");
+      setNoteReason("");
+      setNoteSavedAt(null);
+      setNoteFeedback(null);
+    }
   };
 
   const handleClearAllHistory = () => {
@@ -704,7 +810,80 @@ ${formatSection("7. 추가 확인 참고 자료 및 출처 정보", sourceConten
       } catch (e) {
         console.error(e);
       }
+      setSelectedHistoryId(null);
+      setNoteStatus("");
+      setNoteReason("");
+      setNoteSavedAt(null);
+      setNoteFeedback(null);
     }
+  };
+
+  // 📝 내 생각 정리하기 (검토 기록) 저장 핸들러
+  const handleSaveDecisionNote = () => {
+    if (!result) return;
+    if (!noteStatus) return;
+    const trimmedReason = noteReason.trim();
+    if (!trimmedReason || trimmedReason.length > 500) return;
+
+    const nowIso = new Date().toISOString();
+    const targetId = currentAnalysisId || (isSampleView && currentSampleId ? `sample-${currentSampleId}` : Date.now().toString());
+
+    setHistory((prev) => {
+      const existingIndex = prev.findIndex((item) => item.id === targetId);
+      let updated: HistoryItem[];
+
+      if (existingIndex >= 0) {
+        const existing = prev[existingIndex];
+        const updatedItem: HistoryItem = {
+          ...existing,
+          decisionNote: {
+            status: noteStatus,
+            reason: trimmedReason,
+            createdAt: existing.decisionNote?.createdAt || nowIso,
+            updatedAt: nowIso,
+          },
+        };
+        updated = [...prev];
+        updated[existingIndex] = updatedItem;
+      } else {
+        const newItem: HistoryItem = {
+          id: targetId,
+          title: isSampleView ? `[체험 예시] ${result.title || "체험 분석"}` : (result.title || "분석 리포트"),
+          date: new Date().toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }),
+          sentiment: result.sentiment,
+          impactScore: result.impactScore,
+          summary: result.summary3Sec,
+          inputText: inputText || result.title,
+          result: result,
+          isSample: Boolean(isSampleView),
+          decisionNote: {
+            status: noteStatus,
+            reason: trimmedReason,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          },
+        };
+        updated = [newItem, ...prev.slice(0, 19)];
+      }
+
+      try {
+        localStorage.setItem("stock_analysis_history_v1", JSON.stringify(updated));
+        setNoteSavedAt(nowIso);
+        setCurrentAnalysisId(targetId);
+        setSelectedHistoryId(targetId);
+        setNoteFeedback({ type: "success", message: "내 검토 기록이 안전하게 저장되었습니다." });
+        setTimeout(() => {
+          setNoteFeedback(null);
+        }, 4000);
+      } catch (err) {
+        console.error("검토 기록 저장 실패:", err);
+        setNoteFeedback({
+          type: "error",
+          message: "브라우저 저장 공간 등의 문제로 기록을 저장하지 못했습니다.",
+        });
+      }
+      return updated;
+    });
   };
 
   const handleAnalyzeDirectInput = async (customText?: string) => {
@@ -737,7 +916,7 @@ ${formatSection("7. 추가 확인 참고 자료 및 출처 정보", sourceConten
       saveToHistory(textToAnalyze, data);
     } catch (err: any) {
       console.error(err);
-      setError(err.message || "분석 중 오류가 발생했습니다.");
+      setError(cleanErrorMessage(err.message));
     } finally {
       setLoading(false);
     }
@@ -830,6 +1009,14 @@ ${formatSection("7. 추가 확인 참고 자료 및 출처 정보", sourceConten
     <div className="min-h-screen bg-[#F8F9FA] text-[#111827] font-sans antialiased selection:bg-[#00B4D8]/20 selection:text-[#0A192F]">
       {/* Brand Guide Modal */}
       <BrandGuideModal isOpen={isBrandGuideOpen} onClose={() => setIsBrandGuideOpen(false)} />
+
+      {/* Unauthorized Domain Modal */}
+      <UnauthorizedDomainModal
+        isOpen={isDomainModalOpen}
+        onClose={() => setIsDomainModalOpen(false)}
+        domain={typeof window !== "undefined" ? window.location.hostname : ""}
+        onUseDemo={handleUseDemoFromModal}
+      />
 
       {/* Header (ViewBridge Insight Navy Theme) */}
       <header className="bg-[#0A192F] text-white sticky top-0 z-40 shadow-md border-b border-[#0A192F]/80">
@@ -977,6 +1164,23 @@ ${formatSection("7. 추가 확인 참고 자료 및 출처 정보", sourceConten
                 setChatMessages([]);
                 if (sample.preloadedResult) {
                   setResult(sample.preloadedResult);
+                  const sampleKey = `sample-${sample.id}`;
+                  const existing = history.find((h) => h.id === sampleKey);
+                  setCurrentAnalysisId(sampleKey);
+                  setIsSampleView(true);
+                  setCurrentSampleId(sample.id);
+                  if (existing) {
+                    setSelectedHistoryId(sampleKey);
+                    setNoteStatus(existing.decisionNote?.status || "");
+                    setNoteReason(existing.decisionNote?.reason || "");
+                    setNoteSavedAt(existing.decisionNote?.updatedAt || null);
+                  } else {
+                    setSelectedHistoryId(null);
+                    setNoteStatus("");
+                    setNoteReason("");
+                    setNoteSavedAt(null);
+                  }
+                  setNoteFeedback(null);
                 } else {
                   handleAnalyzeDirectInput(sample.content);
                 }
@@ -1204,6 +1408,32 @@ ${formatSection("7. 추가 확인 참고 자료 및 출처 정보", sourceConten
                     </>
                   )}
                 </div>
+
+                {/* Notice if not logged in to Google */}
+                {!user && (
+                  <div className="mt-2 p-3 bg-[#F8F9FA] border border-slate-200/90 rounded-xl flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                    <div className="text-[11px] text-slate-600">
+                      <span>실제 내 구글 드라이브 문서를 연동하고 싶으신가요?</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setIsDomainModalOpen(true)}
+                        className="px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-[#0A192F] text-[11px] font-semibold transition-all cursor-pointer"
+                      >
+                        도메인 설정 안내
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleLogin}
+                        disabled={isLoggingIn}
+                        className="px-3 py-1.5 rounded-lg bg-[#0A192F] hover:bg-[#00B4D8] text-white text-[11px] font-bold transition-all cursor-pointer"
+                      >
+                        {isLoggingIn ? "연결 중..." : "구글 드라이브 연결"}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -1280,9 +1510,37 @@ ${formatSection("7. 추가 확인 참고 자료 및 출처 정보", sourceConten
 
               {/* Error Message */}
               {error && (
-                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 font-medium flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 text-rose-500 shrink-0" />
-                  <span>{error}</span>
+                <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 font-medium flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 shadow-xs">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-rose-500 shrink-0" />
+                    <span className="leading-relaxed">{error}</span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
+                    {error.includes("승인된 도메인") && (
+                      <button
+                        type="button"
+                        onClick={() => setIsDomainModalOpen(true)}
+                        className="text-[11px] font-bold text-[#0077B6] hover:text-[#0A192F] underline cursor-pointer"
+                      >
+                        해결 방법 보기
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (tab === "drive" && selectedFile) {
+                          handleAnalyzeDriveFile(selectedFile);
+                        } else {
+                          handleAnalyzeDirectInput();
+                        }
+                      }}
+                      disabled={loading || !isComplianceChecked}
+                      className="px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1 disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} />
+                      <span>다시 시도</span>
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -1316,7 +1574,29 @@ ${formatSection("7. 추가 확인 참고 자료 및 출처 정보", sourceConten
                       }`}
                     >
                       <div className="flex-1 truncate">
-                        <p className="truncate text-xs">{item.title}</p>
+                        <div className="flex items-center gap-1.5 truncate mb-0.5">
+                          {item.isSample && (
+                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 shrink-0">
+                              체험 예시
+                            </span>
+                          )}
+                          {item.decisionNote && (
+                            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0 ${
+                              item.decisionNote.status === "reviewed"
+                                ? "bg-emerald-100 text-emerald-800"
+                                : item.decisionNote.status === "deferred"
+                                ? "bg-slate-100 text-slate-700"
+                                : "bg-amber-100 text-amber-800"
+                            }`}>
+                              {item.decisionNote.status === "reviewed"
+                                ? "검토 완료"
+                                : item.decisionNote.status === "deferred"
+                                ? "판단 보류"
+                                : "추가 확인 필요"}
+                            </span>
+                          )}
+                          <p className="truncate text-xs">{item.title}</p>
+                        </div>
                         <span className="text-[10px] text-slate-400 font-normal">{item.date}</span>
                       </div>
                       <button
@@ -1460,7 +1740,7 @@ ${formatSection("7. 추가 확인 참고 자료 및 출처 정보", sourceConten
                   </div>
                 </div>
 
-                {/* 1. [공신력 검증] 🛡️ 공신력 자료 바탕 출처 및 신뢰성 정밀 진단 */}
+                {/* 1. [출처 안내] 🛡️ 출처 및 추가 확인 안내 */}
                 <div className="bg-blue-50/50 border border-blue-100/90 rounded-2xl p-6 shadow-xs">
                   <div className="flex items-start gap-3 mb-5">
                     <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
@@ -1468,19 +1748,19 @@ ${formatSection("7. 추가 확인 참고 자료 및 출처 정보", sourceConten
                     </div>
                     <div>
                       <h3 className="text-sm font-extrabold text-[#0A192F] flex items-center gap-2">
-                        <span>공신력 자료 바탕 출처 및 신뢰성 정밀 진단</span>
+                        <span>출처 및 추가 확인 안내</span>
                       </h3>
                       <p className="text-[11px] text-slate-500 mt-0.5">
-                        인공지능이 뉴스/보고서의 신뢰성과 유관기관 공식 통계 자료를 교차 검증한 결과입니다.
+                        분석 문서의 출처 정보와 공식 채널을 통한 추가 교차 검증 참고 지표입니다.
                       </p>
                     </div>
                   </div>
 
-                  {/* 서브섹션 1: 출처 및 정보 공신력 평가 */}
+                  {/* 서브섹션 1: 출처 및 추가 확인 안내 */}
                   <div className="mb-4">
                     <h4 className="text-xs font-bold text-blue-600 mb-2 flex items-center gap-1.5">
                       <CheckCircle2 className="w-3.5 h-3.5" />
-                      <span>출처 및 정보 공신력 평가</span>
+                      <span>출처 및 추가 확인 안내</span>
                     </h4>
                     <div className="p-4 bg-white rounded-xl border border-slate-200/80 text-xs text-slate-700 leading-relaxed shadow-2xs">
                       {result.sourceCredibility || "이 기사는 공식 보도 및 주요 기업 발표를 바탕으로 작성되어 기본적인 공신력을 갖추고 있습니다."}
@@ -1512,24 +1792,44 @@ ${formatSection("7. 추가 확인 참고 자료 및 출처 정보", sourceConten
                   </div>
                 </div>
 
-                {/* 2. [실시간 교차 검증] 🌐 실시간 추가 금융 소식 및 교차 검증 뉴스 [GOOGLE SEARCH LIVE] */}
+                {/* 2. [참고자료] 🌐 관련 참고자료 및 교차 검증 뉴스 */}
                 <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs">
                   <div className="flex flex-wrap items-center justify-between gap-2 mb-3.5">
                     <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                      <div className="w-8 h-8 rounded-xl bg-slate-800 text-white flex items-center justify-center shrink-0 shadow-xs">
                         <Globe className="w-4 h-4" />
                       </div>
                       <div>
                         <div className="flex items-center gap-2">
                           <h3 className="text-xs font-extrabold text-[#0A192F]">
-                            실시간 추가 금융 소식 및 교차 검증 뉴스
+                            관련 참고자료 및 교차 검증 뉴스
                           </h3>
-                          <span className="bg-emerald-100 text-emerald-800 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full">
-                            GOOGLE SEARCH LIVE
-                          </span>
+                          {result.searchStatus === "sample" ? (
+                            <span className="bg-slate-100 text-slate-700 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border border-slate-200">
+                              사전 작성된 체험 예시
+                            </span>
+                          ) : result.searchStatus === "grounded" ? (
+                            <span className="bg-emerald-100 text-emerald-800 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full">
+                              검색 기반 참고자료
+                            </span>
+                          ) : result.searchStatus === "not_grounded" ? (
+                            <span className="bg-slate-100 text-slate-600 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full">
+                              검색 미수행 / 근거 미확인
+                            </span>
+                          ) : (
+                            <span className="bg-amber-50 text-amber-800 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border border-amber-200">
+                              검색 여부 미확인
+                            </span>
+                          )}
                         </div>
                         <p className="text-[11px] text-slate-500 mt-0.5">
-                          구글 검색 엔진의 실시간 결과를 반영하여, 분석 기사와 가장 밀접한 핵심 뉴스 및 공시 자료를 찾아 연동한 결과입니다.
+                          {result.searchStatus === "sample"
+                            ? "체험을 위해 사전에 작성된 참고자료입니다. (실시간 검색 결과가 아닙니다)"
+                            : result.searchStatus === "grounded"
+                            ? "검색 엔진을 통해 실제 확인된 참고자료입니다."
+                            : result.searchStatus === "not_grounded"
+                            ? "검색으로 확인된 참고자료가 없습니다. 공식자료에서 추가 확인해 주세요."
+                            : "과거 분석 이력으로 검색 실행 여부가 기록되지 않았습니다. 공식자료에서 추가 확인해 주세요."}
                         </p>
                       </div>
                     </div>
@@ -1561,7 +1861,7 @@ ${formatSection("7. 추가 확인 참고 자료 및 출처 정보", sourceConten
                     )}
                   </div>
 
-                  {result.relatedNews && result.relatedNews.length > 0 ? (
+                  {result.relatedNews && result.relatedNews.length > 0 && (result.searchStatus === "grounded" || result.searchStatus === "sample") ? (
                     <div className="space-y-3">
                       {getSortedNews().map((news, idx) => (
                         <div
@@ -1593,9 +1893,13 @@ ${formatSection("7. 추가 확인 참고 자료 및 출처 정보", sourceConten
                       ))}
                     </div>
                   ) : (
-                    <div className="p-8 border-2 border-dashed border-slate-200 rounded-xl text-center bg-slate-50/50">
-                      <p className="text-xs text-slate-400 font-medium">
-                        분석된 주제와 부합하는 추가 실시간 관련 뉴스를 구글 검색에서 조회 중이거나, 검색 결과가 존재하지 않습니다.
+                    <div className="p-6 border border-slate-200 rounded-xl text-center bg-slate-50/50">
+                      <p className="text-xs text-slate-500 font-medium">
+                        {result.searchStatus === "not_grounded"
+                          ? "검색으로 확인된 참고자료가 없습니다. 공식자료에서 추가 확인해 주세요."
+                          : !result.searchStatus
+                          ? "검색 여부 미확인: 과거 분석 이력으로 검색 실행 여부가 기록되지 않았습니다. 공식자료에서 추가 확인해 주세요."
+                          : "분석된 주제와 부합하는 추가 참고자료가 존재하지 않습니다."}
                       </p>
                     </div>
                   )}
@@ -1684,15 +1988,20 @@ ${formatSection("7. 추가 확인 참고 자료 및 출처 정보", sourceConten
                   </div>
                 </div>
 
-                {/* 4. [팩트 분석] ✅ 뉴스 핵심 팩트 분석 & 인사이트 */}
+                {/* 4. [원문 사실] ✅ 원문 기반 사실 정리 */}
                 <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs">
                   <div className="flex items-center gap-2 mb-3.5 pb-2.5 border-b border-slate-100">
                     <div className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
                       <CheckCircle2 className="w-4 h-4" />
                     </div>
-                    <h3 className="text-xs font-extrabold text-[#0A192F]">
-                      뉴스 핵심 팩트 분석 & 인사이트
-                    </h3>
+                    <div>
+                      <h3 className="text-xs font-extrabold text-[#0A192F]">
+                        원문 기반 사실 정리
+                      </h3>
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        AI가 입력 원문에서 추출한 내용입니다. 원문 자체의 진위나 외부 자료와의 일치 여부까지 검증한 것은 아닙니다.
+                      </p>
+                    </div>
                   </div>
 
                   <div className="space-y-2.5">
@@ -1888,6 +2197,180 @@ ${formatSection("7. 추가 확인 참고 자료 및 출처 정보", sourceConten
                       </div>
                     </div>
                   </div>
+                </div>
+
+                {/* 8. [반대 해석] ⚖️ 다르게 볼 수 있는 관점 (대안적 시각) */}
+                <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs">
+                  <div className="flex items-center justify-between mb-3.5 pb-2.5 border-b border-slate-100">
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 rounded-full bg-slate-800 text-white flex items-center justify-center shrink-0">
+                        <Scale className="w-3.5 h-3.5" />
+                      </div>
+                      <div>
+                        <h3 className="text-xs font-extrabold text-[#0A192F]">
+                          다르게 볼 수 있는 관점
+                        </h3>
+                        <p className="text-[10px] text-slate-500 mt-0.5">
+                          AI가 제시한 대안적 해석입니다. 외부 자료로 검증된 반대근거를 뜻하지 않습니다.
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-[10px] px-2 py-0.5 rounded-md bg-slate-100 font-bold text-slate-600 border border-slate-200 hidden sm:inline-block">
+                      대안적 시각
+                    </span>
+                  </div>
+
+                  <div className="space-y-3">
+                    {result.counterPerspectives && result.counterPerspectives.length > 0 ? (
+                      result.counterPerspectives.map((cp, idx) => (
+                        <div
+                          key={idx}
+                          className="p-3.5 bg-[#F8F9FA] rounded-xl border border-slate-200/80 text-xs shadow-2xs hover:border-slate-300 transition-colors"
+                        >
+                          <div className="flex items-center gap-1.5 mb-1.5 font-bold text-[#0A192F]">
+                            <span className="w-4 h-4 rounded-full bg-slate-700 text-white font-bold text-[10px] flex items-center justify-center shrink-0">
+                              {idx + 1}
+                            </span>
+                            <span>다른 해석: {cp.interpretation}</span>
+                          </div>
+                          <div className="text-[11.5px] text-slate-600 leading-relaxed space-y-1.5 pl-5">
+                            <div>
+                              <strong className="text-slate-700">그렇게 보는 이유:</strong> {cp.reasoning}
+                            </div>
+                            <div className="pt-0.5 text-slate-500 flex items-start gap-1">
+                              <span className="text-[#00B4D8] font-bold shrink-0">↳</span>
+                              <span>
+                                <strong className="text-slate-600">추가로 확인할 자료:</strong> {cp.evidenceToCheck}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="p-4 bg-[#F8F9FA] rounded-xl border border-slate-200/70 text-center">
+                        <p className="text-xs text-slate-500">
+                          이 분석 건에는 별도로 등록된 반대 해석이 없습니다.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* 9. [내 생각 정리하기] ✍️ 잠깐, 내 생각 정리하기 (검토 기록) */}
+                <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs">
+                  <div className="flex items-center justify-between mb-3.5 pb-2.5 border-b border-slate-100">
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 rounded-full bg-[#00B4D8]/20 text-[#0077B6] flex items-center justify-center shrink-0">
+                        <PenLine className="w-3.5 h-3.5" />
+                      </div>
+                      <div>
+                        <h3 className="text-xs font-extrabold text-[#0A192F]">
+                          잠깐, 내 생각 정리하기
+                        </h3>
+                        <p className="text-[10px] text-slate-500 mt-0.5">
+                          AI 해설을 읽은 뒤, 더 확인할 내용과 현재 생각을 남겨보세요.
+                        </p>
+                      </div>
+                    </div>
+                    {noteSavedAt && (
+                      <span className="text-[10px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200 font-medium">
+                        최근 저장: {new Date(noteSavedAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* 질문 1: 현재 검토 상태 */}
+                  <div className="mb-4">
+                    <label className="block text-xs font-bold text-[#0A192F] mb-2">
+                      질문 1. 현재 검토 상태는 어떤가요?
+                    </label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {[
+                        { id: "needs_verification", label: "추가 확인 필요" },
+                        { id: "deferred", label: "판단 보류" },
+                        { id: "reviewed", label: "검토 완료" },
+                      ].map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => setNoteStatus(opt.id as DecisionNoteStatus)}
+                          className={`py-2 px-2.5 rounded-xl text-xs font-bold border transition-all cursor-pointer text-center ${
+                            noteStatus === opt.id
+                              ? "bg-[#0A192F] text-white border-[#0A192F] shadow-xs"
+                              : "bg-[#F8F9FA] text-slate-600 border-slate-200 hover:bg-slate-100"
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-[10.5px] text-slate-400 mt-1.5 leading-snug">
+                      ※ 안내: 검토 완료는 매수·매도 결정이나 정보의 정확성 확인을 의미하지 않습니다.
+                    </p>
+                  </div>
+
+                  {/* 질문 2: 이유 및 추가 확인 사항 */}
+                  <div className="mb-4">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-xs font-bold text-[#0A192F]">
+                        질문 2. 어떤 이유로 선택했나요? 더 확인할 내용이 있다면 함께 적어주세요.
+                      </label>
+                      <span className={`text-[10px] font-mono ${noteReason.length > 500 ? "text-rose-500 font-bold" : "text-slate-400"}`}>
+                        {noteReason.length}/500자
+                      </span>
+                    </div>
+                    <textarea
+                      value={noteReason}
+                      onChange={(e) => setNoteReason(e.target.value.slice(0, 500))}
+                      rows={4}
+                      maxLength={500}
+                      placeholder="예: 실적 발표 수치는 긍정적이나, 원자재 가격 변동 리스크와 DART 후속 공시를 먼저 확인하기 위해 판단을 보류함"
+                      className="w-full p-3 rounded-xl border border-slate-200 text-xs text-slate-800 leading-relaxed bg-[#F8F9FA] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#00B4D8] resize-none"
+                    />
+                  </div>
+
+                  {/* 피드백 배너 (저장 성공 / 실패) */}
+                  {noteFeedback && (
+                    <div
+                      className={`p-2.5 mb-3 rounded-xl text-xs font-semibold flex items-center gap-2 ${
+                        noteFeedback.type === "success"
+                          ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
+                          : "bg-rose-50 border border-rose-200 text-rose-800"
+                      }`}
+                    >
+                      {noteFeedback.type === "success" ? (
+                        <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      ) : (
+                        <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                      )}
+                      <span>{noteFeedback.message}</span>
+                    </div>
+                  )}
+
+                  {/* 저장 버튼 */}
+                  <div className="flex items-center justify-between gap-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={handleSaveDecisionNote}
+                      disabled={!noteStatus || !noteReason.trim() || noteReason.length > 500}
+                      className={`px-5 py-2.5 rounded-xl font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer ${
+                        !noteStatus || !noteReason.trim() || noteReason.length > 500
+                          ? "bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed"
+                          : "bg-[#0A192F] hover:bg-[#00B4D8] text-white shadow-xs"
+                      }`}
+                    >
+                      <Save className="w-3.5 h-3.5" />
+                      <span>내 검토 기록 저장</span>
+                    </button>
+                    <p className="text-[10px] text-slate-400 text-right leading-tight max-w-xs hidden sm:block">
+                      분석 및 검토 기록은 현재 브라우저에 최대 20건 저장됩니다.
+                    </p>
+                  </div>
+
+                  {/* 안내 문구 */}
+                  <p className="text-[10px] text-slate-400 mt-3 pt-2.5 border-t border-slate-100 leading-relaxed">
+                    ※ 분석 및 검토 기록은 현재 브라우저에 최대 20건 저장됩니다. 다른 기기와 동기화되지 않으며, 브라우저 데이터를 삭제하면 사라질 수 있습니다.
+                  </p>
                 </div>
 
                 {/* 6. [행동 지침] ✨ 초보자 당장 대응 및 실천 리스크 지침 (Action Plan) */}

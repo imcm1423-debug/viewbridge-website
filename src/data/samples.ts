@@ -31,6 +31,7 @@ export const SAMPLE_ARTICLES: SampleArticle[] = [
       sentimentReason: "글로벌 AI 반도체 수요 급증에 대응한 대규모 설비 투자 재개로 장비·부품 밸류체인 및 지역 경제에 강한 긍정적 모멘텀이 확인됩니다.",
       impactScore: 5,
       isPolicyDoc: false,
+      searchStatus: "sample",
       sourceCredibility: "이 기사는 산업 전문 언론사의 취재 보도 및 삼성전자 공시 자료를 바탕으로 작성되었습니다. 대규모 공사 재개 시공 계약 및 투자 계획은 금융감독원 전자공시시스템(DART)에 공시된 분기보고서와 지자체 인허가 현황을 기초로 교차 검증이 가능한 사실 기반 자료입니다.",
       authoritativeContext: [
         "삼성전자 분기보고서(DART) 내 시설 투자(CAPEX) 부문 집행 실적 및 평택 캠퍼스 관련 공식 공시 정보",
@@ -158,6 +159,7 @@ export const SAMPLE_ARTICLES: SampleArticle[] = [
       sentimentReason: "정기 배당을 지급하는 주주 환원 문화 정착으로 배당 매력도가 증대되고 있으나 재무 건전성 점검이 병행되어야 합니다.",
       impactScore: 4,
       isPolicyDoc: false,
+      searchStatus: "sample",
       sourceCredibility: "이 기사는 주요 경제 일간지인 '머니투데이'의 보도이며, 기업 분석 전문 기관인 '리더스인덱스'의 전수 조사 데이터(2,873개 상장사 대상 공시 분석)를 기반으로 작성되어 신뢰도가 매우 높습니다. 단순 소문이 아닌 금융감독원 전자공시시스템(DART)에 공시된 실제 배당 현황을 기초로 팩트체크가 완료된 자료입니다.",
       authoritativeContext: [
         "금융감독원 전자공시시스템(DART): 각 기업의 분기/반기 배당 결정 공시를 직접 확인하여 정확한 배당 기준일과 주당 배당금을 교차 검증할 수 있습니다.",
@@ -273,6 +275,7 @@ export const SAMPLE_ARTICLES: SampleArticle[] = [
       sentimentReason: "통화 긴축 종료와 유동성 공급 기대감이 기술주 및 성장주에 우호적으로 작용할 수 있으나 경기 연착륙 여부 확인이 필요합니다.",
       impactScore: 5,
       isPolicyDoc: false,
+      searchStatus: "sample",
       sourceCredibility: "미국 연방준비제도(Fed)의 공식 FOMC 정책 성명서 및 제롬 파월 의장의 기자회견 발언을 직접 인용한 공신력 높은 매크로 기사입니다.",
       authoritativeContext: [
         "미국 연방준비제도(Federal Reserve) 공식 성명서(FOMC Statement)",
@@ -420,6 +423,7 @@ export const SAMPLE_ARTICLES: SampleArticle[] = [
       sentimentReason: "해당 문서는 특정 종목의 투자 판단 대상이 아니므로, 호재/악재 판단 대신 제도 이해 중심으로 해석합니다.",
       impactScore: 4,
       isPolicyDoc: true,
+      searchStatus: "sample",
       sourceCredibility: "금융위원회가 공식 발표한 보도자료 및 청년 금융 정책 가이드라인을 기초로 작성된 최상위 공신력의 정부 공식 정책 자료입니다.",
       authoritativeContext: [
         "금융위원회(FSC) 보도자료: 2026년도 청년 자산 형성 지원 금융상품 세부 운영방안",
